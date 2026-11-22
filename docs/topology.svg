@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 520" font-family="Segoe UI,Arial,sans-serif" font-size="13">
+<rect width="1000" height="520" fill="#fff"/>
+<text x="500" y="28" text-anchor="middle" font-size="18" font-weight="600">FTP through NAT: topology (Linux namespaces + veth, static routing)</text>
+<g fill="#eef4fb" stroke="#1f5fbf" stroke-width="2">
+<rect x="30" y="150" width="170" height="90" rx="8"/><rect x="290" y="150" width="170" height="90" rx="8" fill="#fff4e0" stroke="#b26a00"/>
+<rect x="560" y="150" width="150" height="90" rx="8"/><rect x="800" y="150" width="170" height="90" rx="8"/></g>
+<g font-weight="600" text-anchor="middle"><text x="115" y="175">ftp-client</text><text x="375" y="175">R1 (NAT/PAT)</text><text x="635" y="175">R2</text><text x="885" y="175">ftp-server (vsftpd)</text></g>
+<g text-anchor="middle" fill="#333"><text x="115" y="200">eth0 192.168.10.2/24</text><text x="115" y="218">gw 192.168.10.1</text>
+<text x="375" y="198">eth-in 192.168.10.1/24</text><text x="375" y="216">eth-out 10.0.12.1/30</text><text x="375" y="232" fill="#b26a00">nftables + conntrack</text>
+<text x="635" y="198">eth-in 10.0.12.2/30</text><text x="635" y="216">eth-srv 172.16.20.1/24</text>
+<text x="885" y="200">eth0 172.16.20.10/24</text><text x="885" y="218">gw 172.16.20.1</text></g>
+<g stroke="#999" stroke-width="4"><line x1="200" y1="195" x2="290" y2="195"/><line x1="460" y1="195" x2="560" y2="195" stroke="#b26a00"/><line x1="710" y1="195" x2="800" y2="195"/></g>
+<g text-anchor="middle" fill="#555"><text x="245" y="130">192.168.10.0/24</text><text x="510" y="130">10.0.12.0/30</text><text x="510" y="146" fill="#b26a00">tc netem loss 0/2/5% + tbf 10 Mbit</text><text x="755" y="130">172.16.20.0/24</text></g>
+<text x="500" y="285" text-anchor="middle" font-weight="600">Protocol flows</text>
+<g stroke-width="2.5" fill="none" marker-end="url(#a)">
+<defs><marker id="a" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto"><path d="M0,0 L10,4 L0,8z" fill="context-stroke"/></marker></defs>
+<path d="M115,300 H885" stroke="#1f5fbf"/><path d="M115,350 H885" stroke="#0b7a5a"/><path d="M885,400 H115" stroke="#b3243f"/></g>
+<g><text x="120" y="318" fill="#1f5fbf">1. Control: client eph port -> server TCP 21 (USER, PASS, PASV/PORT, LIST, RETR). R1 masquerades source to 10.0.12.1.</text>
+<text x="120" y="368" fill="#0b7a5a">2. Passive data: client eph port -> server TCP 40000-40100 (port from 227 reply). Client opens it: outbound, NAT-friendly.</text>
+<text x="120" y="418" fill="#b3243f">3. Active data: server TCP 20 -> client port from PORT. Server opens it: inbound; N1 breaks it, N2 helper expectation fixes it.</text></g>
+<g fill="#444"><text x="30" y="470">N0: routing only (R2 has return route to 192.168.10.0/24)</text><text x="30" y="490">N1: masquerade, no helper (R2 has no route to the private LAN)</text><text x="30" y="510">N2: masquerade + nf_conntrack_ftp helper (ct helper on tcp/21)</text></g>
+</svg>

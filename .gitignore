@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+# Generated measurements and traces (can be large or contain credentials)
+results/*
+!results/.gitkeep
+!results/README.md
+!results/pcap/
+!results/conntrack/
+!results/nft/
+!results/screenshots/
+!results/charts/
+results/pcap/*
+results/conntrack/*
+results/nft/*
+results/screenshots/*
+results/charts/*
+!results/pcap/.gitkeep
+!results/conntrack/.gitkeep
+!results/nft/.gitkeep
+!results/screenshots/.gitkeep
+!results/charts/.gitkeep
+# Runtime job logs/state
+web/runtime/
+*.log
+.DS_Store

@@ -1,0 +1,20 @@
+name: Static checks and API contracts
+on:
+  push:
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install test requirements
+        run: python -m pip install -r requirements-dev.txt
+      - name: Compile Python sources
+        run: python -m compileall -q client tools web
+      - name: Verify shell script syntax
+        run: for f in scripts/*.sh; do bash -n "$f"; done
+      - name: Test API and contracts (offline mocks)
+        run: python -m pytest -q tests

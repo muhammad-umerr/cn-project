@@ -1,0 +1,18 @@
+# N2: masquerade + kernel FTP connection tracking helper on control traffic (port 21)
+flush ruleset
+table ip nat {
+  chain postrouting {
+    type nat hook postrouting priority srcnat; policy accept;
+    oifname "eth-out" ip saddr 192.168.10.0/24 counter masquerade
+  }
+}
+table ip ftp {
+  ct helper ftp-std { type "ftp" protocol tcp; l3proto ip; }
+  chain pre {
+    type filter hook prerouting priority filter; policy accept;
+    ip daddr 172.16.20.10 tcp dport 21 counter ct helper set "ftp-std"
+  }
+}
+table ip filter {
+  chain forward { type filter hook forward priority filter; policy accept; counter }
+}

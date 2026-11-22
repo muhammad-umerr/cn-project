@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>FTP through NAT: Active vs Passive</title>
+<style>
+:root{--bg:#f3f6f9;--sf:#fff;--tx:#14202b;--mu:#5b6b7a;--ln:#d3dce5;--ok:#0b7a5a;--bad:#b3243f;--nat:#b26a00;--ac:#1f5fbf;--ct:#0e1a24;--ctx:#9fe3c8;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media(prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#0f161d;--sf:#17212b;--tx:#e6edf3;--mu:#8fa1b2;--ln:#2a3948;--ok:#4cd2a0;--bad:#ff7d93;--nat:#f2b04d;--ac:#7ab0ff;--ct:#080d12;--ctx:#9fe3c8}}
+:root[data-theme=dark]{--bg:#0f161d;--sf:#17212b;--tx:#e6edf3;--mu:#8fa1b2;--ln:#2a3948;--ok:#4cd2a0;--bad:#ff7d93;--nat:#f2b04d;--ac:#7ab0ff;--ct:#080d12;--ctx:#9fe3c8}
+*{box-sizing:border-box}html{scroll-padding-top:env(safe-area-inset-top,0px)}
+body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.5 "Segoe UI",system-ui,sans-serif}
+.mono{font-family:ui-monospace,Menlo,Consolas,monospace}
+header{padding:20px 24px 8px;max-width:1100px;margin:auto}
+h1{margin:0;font-size:24px;letter-spacing:-.01em}header p{margin:4px 0 0;color:var(--mu);max-width:70ch}
+nav{display:flex;gap:4px;max-width:1100px;margin:12px auto 0;padding:0 24px;border-bottom:1px solid var(--ln);overflow-x:auto}
+nav button{background:none;border:0;border-bottom:3px solid transparent;padding:10px 14px;color:var(--mu);font:inherit;cursor:pointer;white-space:nowrap}
+nav button[aria-selected=true]{color:var(--tx);border-color:var(--ac);font-weight:600}
+main{max-width:1100px;margin:auto;padding:16px 24px 40px}
+.panel{display:none}.panel.on{display:block}
+.ctl{display:flex;flex-wrap:wrap;gap:16px;align-items:flex-end;margin-bottom:14px}
+.grp b{display:block;font-size:13px;color:var(--mu);font-weight:500;margin-bottom:4px}
+.seg{display:inline-flex;border:1px solid var(--ln);border-radius:8px;overflow:hidden;background:var(--sf)}
+.seg button{border:0;background:none;color:var(--tx);padding:7px 12px;font:inherit;cursor:pointer;border-right:1px solid var(--ln)}
+.seg button:last-child{border:0}.seg button[aria-pressed=true]{background:var(--ac);color:#fff}
+.act button{padding:8px 14px;border-radius:8px;border:1px solid var(--ln);background:var(--sf);color:var(--tx);font:inherit;cursor:pointer;margin-right:6px}
+.act .go{background:var(--ac);color:#fff;border-color:var(--ac)}
+button:focus-visible{outline:2px solid var(--ac);outline-offset:2px}
+.card{background:var(--sf);border:1px solid var(--ln);border-radius:10px;padding:14px;margin-bottom:14px}
+svg{width:100%;height:auto;display:block}
+svg text{fill:var(--tx);font-size:12px}svg .mu{fill:var(--mu);font-size:11px}
+.node{fill:var(--sf);stroke:var(--ac);stroke-width:2}.nat{stroke:var(--nat)}
+.link{stroke:var(--ln);stroke-width:4}.link.hot{stroke:var(--ac)}
+.verdict{font-weight:600;padding:10px 14px;border-radius:8px;margin-bottom:14px}
+.verdict.ok{background:color-mix(in srgb,var(--ok) 14%,var(--sf));color:var(--ok)}
+.verdict.bad{background:color-mix(in srgb,var(--bad) 14%,var(--sf));color:var(--bad)}
+.cols{display:grid;grid-template-columns:3fr 2fr;gap:14px}
+@media(max-width:820px){.cols{grid-template-columns:1fr}}
+.log{max-height:360px;overflow:auto;font-size:13px}
+.row{display:grid;grid-template-columns:62px 1fr;gap:8px;padding:6px 8px;border-left:3px solid var(--ln);margin-bottom:4px}
+.row.cur{background:color-mix(in srgb,var(--ac) 10%,var(--sf));border-color:var(--ac)}
+.row.bad{border-color:var(--bad)}.row.lost{border-color:var(--nat);color:var(--nat)}.row.ok{border-color:var(--ok)}
+.row small{display:block;color:var(--mu);font-size:12px}
+.ct{background:var(--ct);color:var(--ctx);border-radius:8px;padding:10px;font-size:12px;min-height:120px;white-space:pre-wrap;overflow:auto;max-height:360px}
+.ct .exp{color:#ffd37a}
+h3{margin:0 0 8px;font-size:15px}
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{border-bottom:1px solid var(--ln);padding:8px;text-align:left;vertical-align:top}
+.y{color:var(--ok);font-weight:600}.n{color:var(--bad);font-weight:600}
+.note{color:var(--mu);font-size:13px}
+.chk{display:flex;gap:10px;padding:6px 0;align-items:flex-start}
+.tblwrap{overflow-x:auto}
+</style></head><body>
+<header><h1>FTP through NAT: Active vs Passive</h1>
+<p>CS3001 Computer Networks. An interactive walkthrough of the topology client → R1 (NAT) → R2 → server. This is a teaching simulation of the expected behaviour, not measured data. Your own captures and runs are the evidence.</p></header>
+<nav role="tablist"><button role="tab" aria-selected="true" data-t="sim">Simulator</button><button role="tab" aria-selected="false" data-t="mat">Expected matrix</button><button role="tab" aria-selected="false" data-t="chk">Deliverables</button></nav>
+<main>
+<section class="panel on" id="sim">
+<div class="ctl">
+<div class="grp"><b>FTP mode</b><div class="seg" data-k="mode"><button data-v="passive" aria-pressed="true">Passive</button><button data-v="active" aria-pressed="false">Active</button></div></div>
+<div class="grp"><b>NAT condition on R1</b><div class="seg" data-k="nat"><button data-v="N0" aria-pressed="false">N0 routing only</button><button data-v="N1" aria-pressed="true">N1 masquerade</button><button data-v="N2" aria-pressed="false">N2 + FTP helper</button></div></div>
+<div class="grp"><b>Loss on R1–R2 link</b><div class="seg" data-k="loss"><button data-v="0" aria-pressed="true">0%</button><button data-v="2" aria-pressed="false">2%</button><button data-v="5" aria-pressed="false">5%</button></div></div>
+<div class="act"><button class="go" id="play">Play</button><button id="next">Step</button><button id="reset">Reset</button><button id="reroll">Re-roll loss</button></div>
+</div>
+<div class="card"><svg id="topo" viewBox="0 0 700 210" role="img" aria-label="Network topology"></svg></div>
+<div class="verdict" id="verdict"></div>
+<div class="cols">
+<div class="card"><h3>Packet and command log <span class="note" id="clock"></span></h3><div class="log" id="log"></div></div>
+<div class="card"><h3>R1 conntrack (<span class="mono">conntrack -L</span>)</h3><div class="ct mono" id="ct">(empty)</div></div>
+</div>
+<p class="note">Loss model: each packet on the transit link is dropped with the chosen probability and retransmitted after 1 s (initial TCP RTO). Base RTT is 20 ms. Times are illustrative.</p>
+</section>
+
+<section class="panel" id="mat"><div class="card tblwrap"><h3>Expected outcome per mode and NAT condition (hypothesis from the proposal, to be confirmed by your runs)</h3><table id="mtab"></table></div>
+<div class="card"><h3>Why</h3><p><b>Control connection</b> always works: the client opens it outbound, so NAT creates state on the first SYN.</p>
+<p><b>Active, N1:</b> the PORT command carries the private address 192.168.10.2. NAT only rewrites headers, so the server tries to connect to an address R2 cannot route. The data connection fails.</p>
+<p><b>Active, N2:</b> nf_conntrack_ftp reads PORT, rewrites it to 10.0.12.1, and creates an expectation, so the server's inbound SYN is translated back to the client.</p>
+<p><b>Passive:</b> the client opens the data connection outbound to the port in the 227 reply (40000–40100), so ordinary masquerading is enough.</p>
+<p class="note">N0 assumes the return route to 192.168.10.0/24 is added on R2, as the proposal notes.</p></div></section>
+
+<section class="panel" id="chk"><div class="card"><h3>Course deliverables checklist</h3><div id="cl"></div><p class="note">Checks are saved in this browser only. Share status with your team separately.</p></div></section>
+</main>
+<script>
+const $=s=>document.querySelector(s);
+const cfg={mode:'passive',nat:'N1',loss:0};
+let steps=[],idx=-1,timer=null,seed=7;
+function rng(){seed|=0;seed=seed+0x6D2B79F5|0;let t=Math.imul(seed^seed>>>15,1|seed);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}
+const X={c:70,r1:250,r2:430,s:630};
+function drawTopo(hot){
+const L=(a,b,h)=>`<line class="link ${h?'hot':''}" x1="${X[a]}" y1="95" x2="${X[b]}" y2="95"/>`;
+const N=(k,n,ip,cls)=>`<rect class="node ${cls||''}" x="${X[k]-45}" y="68" width="90" height="54" rx="8"/><text x="${X[k]}" y="91" text-anchor="middle" font-weight="600">${n}</text><text class="mu" x="${X[k]}" y="108" text-anchor="middle">${ip}</text>`;
+const h=hot||[];
+$('#topo').innerHTML=L('c','r1',h.includes('c')&&h.includes('r1'))+L('r1','r2',h.includes('r1')&&h.includes('r2'))+L('r2','s',h.includes('r2')&&h.includes('s'))+
+N('c','ftp-client','192.168.10.2')+N('r1','R1 NAT','.1 / 10.0.12.1',cfg.nat==='N0'?'':'nat')+N('r2','R2','10.0.12.2 / .1')+N('s','ftp-server','172.16.20.10')+
+`<text class="mu" x="160" y="150" text-anchor="middle">192.168.10.0/24</text><text class="mu" x="340" y="150" text-anchor="middle">10.0.12.0/30 (netem, tbf)</text><text class="mu" x="530" y="150" text-anchor="middle">172.16.20.0/24</text>
+<text class="mu" x="70" y="40" text-anchor="middle">ctrl: eph→21</text><text class="mu" x="630" y="40" text-anchor="middle">21, 20, 40000–40100</text>
+<text class="mu" x="250" y="40" text-anchor="middle">${cfg.nat==='N0'?'routes only':cfg.nat==='N1'?'masquerade':'masquerade + ftp helper'}</text>
+<circle id="dot" r="7" fill="${'var(--nat)'}" cx="-20" cy="95"/>`;}
+function build(){
+const {mode,nat}=cfg,tr=nat!=='N0',S=[];
+const out=tr?'10.0.12.1':'192.168.10.2';
+const add=(f,t,msg,det,o={})=>S.push(Object.assign({f,t,msg,det},o));
+add('c','s','TCP SYN → :21',`192.168.10.2:50001 → 172.16.20.10:21${tr?`\nR1 rewrites source to ${out}:50001`:''}`,{ct:tr?`tcp SYN_SENT src=192.168.10.2:50001 dst=172.16.20.10:21\n  reply dst=10.0.12.1:50001`:null});
+add('s','c','SYN-ACK','172.16.20.10:21 → client, translated back by R1',{ct:tr?'  [ASSURED] after ACK':null});
+add('c','s','ACK + USER/PASS','three-way handshake done; 220 banner, USER, PASS');
+add('s','c','230 Login successful','control connection ESTABLISHED. Control setup complete.',{good:1});
+if(mode==='passive'){
+add('c','s','PASV','client asks the server to listen');
+add('s','c','227 Entering Passive Mode (172,16,20,10,156,64)','port = 156×256+64 = 40000. Address is reachable from the client.');
+add('c','s','TCP SYN → 172.16.20.10:40000',`client opens data connection (outbound)${tr?`\nR1 translates source to ${out}:50002`:''}`,{ct:tr?`tcp src=192.168.10.2:50002 dst=172.16.20.10:40000\n  reply dst=10.0.12.1:50002`:null});
+add('s','c','SYN-ACK / ACK','data connection established');
+}else{
+const p=nat==='N2'?'10,0,12,1,195,80':'192,168,10,2,195,80';
+add('c','s','PORT '+p,nat==='N2'?'port = 195×256+80 = 50000\nhelper rewrites private address to 10.0.12.1 and creates an expectation':'port = 195×256+80 = 50000\nPayload carries PRIVATE 192.168.10.2. NAT does not touch payload.',{ct:nat==='N2'?'EXPECT tcp 172.16.20.10 → 10.0.12.1:50000\n  helper=ftp, nat: dnat to 192.168.10.2:50000':null,exp:1});
+add('s','c','200 PORT command successful','server stored the announced address');
+if(nat==='N1'){
+add('s','c','TCP SYN 172.16.20.10:20 → 192.168.10.2:50000','R2 has no route to 192.168.10.0/24. Packet dropped, no conntrack entry matches.',{bad:1});
+add('s','s','SYN retransmit 1 s, 2 s, 4 s','no reply; server gives up',{bad:1});
+add('s','c','425 Can\'t open data connection','Failure is at the DATA connection. Control stays up.',{bad:1,fail:1});
+}else{
+add('s','c',`TCP SYN 172.16.20.10:20 → ${nat==='N2'?'10.0.12.1':'192.168.10.2'}:50000`,nat==='N2'?'server opens data connection (inbound). R1 matches the expectation and DNATs to 192.168.10.2:50000':'server opens data connection to the client (return route on R2)',{ct:nat==='N2'?'tcp src=172.16.20.10:20 dst=10.0.12.1:50000  (matched expectation)':null});
+add('c','s','SYN-ACK / ACK','data connection established');
+}}
+if(!S.some(s=>s.fail)){
+add('c','s','RETR 10MB.bin','150 Opening data connection (data setup time ends here)');
+add('s','c','Data stream → 226 Transfer complete','transfer finished; throughput = size / (RETR → 226)',{good:1});
+}
+seed=7+cfg.reroll|0;
+const R=[];let t=0;const p=cfg.loss/100;
+for(const s of S){
+if(!s.bad&&p>0&&rng()<p){R.push({lost:1,f:s.f,t:s.t,msg:'Packet lost',det:'retransmit after 1 s ('+s.msg+')',t0:t+=1000});}
+t+=20;s.t0=t;R.push(s);}
+return R;}
+function show(n){
+idx=n;drawTopo();const lg=$('#log');lg.innerHTML='';
+const ctl=[];
+steps.slice(0,n+1).forEach((s,i)=>{
+const d=document.createElement('div');d.className='row '+(i===n?'cur ':'')+(s.bad?'bad':s.lost?'lost':s.good?'ok':'');
+d.innerHTML=`<span class="mono">${(s.t0/1000).toFixed(2)}s</span><span><b>${s.msg}</b><small class="mono">${s.det.replace(/\n/g,'<br>')}</small></span>`;lg.appendChild(d);
+if(s.ct)ctl.push(s.exp?`<span class="exp">${s.ct}</span>`:s.ct);});
+lg.scrollTop=lg.scrollHeight;
+$('#ct').innerHTML=ctl.length?ctl.join('\n'):(cfg.nat==='N0'?'(no NAT: conntrack holds no translations)':'(empty)');
+$('#clock').textContent=n>=0?'· elapsed '+(steps[n].t0/1000).toFixed(2)+' s':'';
+if(n>=0&&steps[n].f!==steps[n].t)animate(steps[n]);
+const v=$('#verdict'),done=n===steps.length-1;
+const fail=steps.some(s=>s.fail);
+if(!done){v.className='verdict';v.style.cssText='background:var(--sf);border:1px solid var(--ln)';v.textContent='Press Play or Step to follow the session.';}
+else{v.style.cssText='';v.className='verdict '+(fail?'bad':'ok');v.textContent=fail?'Control connection OK, data connection FAILED. LIST/RETR/STOR do not complete.':'Control, data connection and file transfer succeeded.';}
+}
+function animate(s){const d=$('#dot');if(!d)return;const a=X[s.f==='s'&&s.t==='s'?'s':s.f],b=X[s.t==='s'&&s.f==='s'?'s':s.t];let k=0;d.setAttribute('cx',a);
+const iv=setInterval(()=>{k+=.1;d.setAttribute('cx',a+(b-a)*Math.min(k,1));if(k>=1){clearInterval(iv);}},25);
+const keys=['c','r1','r2','s'],i1=keys.indexOf(s.f),i2=keys.indexOf(s.t);}
+function reset(){clearInterval(timer);timer=null;$('#play').textContent='Play';steps=build();show(-1);}
+function nextStep(){if(idx<steps.length-1){show(idx+1);return true}return false}
+$('#next').onclick=()=>{clearInterval(timer);timer=null;$('#play').textContent='Play';nextStep()};
+$('#play').onclick=()=>{if(timer){clearInterval(timer);timer=null;$('#play').textContent='Play';return}
+if(idx>=steps.length-1)reset();$('#play').textContent='Pause';timer=setInterval(()=>{if(!nextStep()){clearInterval(timer);timer=null;$('#play').textContent='Play'}},1100)};
+$('#reset').onclick=reset;$('#reroll').onclick=()=>{cfg.reroll=(cfg.reroll||0)+1;reset()};
+document.querySelectorAll('.seg').forEach(g=>g.onclick=e=>{const b=e.target.closest('button');if(!b)return;g.querySelectorAll('button').forEach(x=>x.setAttribute('aria-pressed',x===b));cfg[g.dataset.k]=g.dataset.k==='loss'?+b.dataset.v:b.dataset.v;reset()});
+document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{document.querySelectorAll('nav button').forEach(x=>x.setAttribute('aria-selected',x===b));document.querySelectorAll('.panel').forEach(p=>p.classList.toggle('on',p.id===b.dataset.t))});
+// matrix
+(function(){const rows=[['Passive','N0','y','y','y','y'],['Passive','N1','y','y','y','y'],['Passive','N2','y','y','y','y'],['Active','N0','y','y','y','y'],['Active','N1','y','n','n','n'],['Active','N2','y','y','y','y']];
+const sym=v=>v==='y'?'<span class="y">yes</span>':'<span class="n">no</span>';
+$('#mtab').innerHTML='<tr><th>Mode</th><th>NAT</th><th>Control + login</th><th>Data connection</th><th>LIST</th><th>RETR / STOR</th></tr>'+rows.map(r=>`<tr><td>${r[0]}</td><td>${r[1]}</td>${r.slice(2).map(v=>`<td>${sym(v)}</td>`).join('')}</tr>`).join('')})();
+// checklist
+const items=['Proposal (a–i) submitted','Architecture diagram: subnets, IPs, ports, nodes, routers, protocol flows','Working POC: one script switches Active/Passive and N0/N1/N2','Run POC live: routing tables, traceroute, captures, conntrack','.pcapng: control handshake + login','.pcapng: PORT exchange (Active)','.pcapng: PASV/EPSV exchange (Passive)','.pcapng: data connection with and without NAT','Annotated screenshots: addresses, ports, flags, FTP messages','Experiments: setup time and throughput at 0%, 2%, 5% loss','At least 3 runs per condition, mean and standard deviation/range','Technical report, 6–10 pages','README: Ubuntu and package versions, commands to reproduce','AI-use disclosure in the final submission (how AI was used)'];
+let saved={};try{saved=JSON.parse(localStorage.getItem('cn-chk')||'{}')}catch(e){}
+$('#cl').innerHTML=items.map((t,i)=>`<label class="chk"><input type="checkbox" data-i="${i}" ${saved[i]?'checked':''}><span>${t}</span></label>`).join('');
+$('#cl').onchange=e=>{saved[e.target.dataset.i]=e.target.checked;try{localStorage.setItem('cn-chk',JSON.stringify(saved))}catch(x){}};
+reset();
+</script></body></html>
