@@ -1,26 +1,22 @@
-# Web application simplification — November 24, 2026
+# Web application — presentation simulator integration
 
-## What changed
+The presentation simulator layout is now **the Flask home page**; there is no separate `presentation/` folder.
 
-- Single homepage only: topology, FTP/NAT selectors, real transfer outcome and current-run capture download.
-- Removed web actions/pages for setup, teardown, batch experiments, result-history, router diagnostics, capture browsing, and miscellaneous artifact downloads.
-- Automatically initializes any missing Linux namespaces and FTP server before Flask accepts requests.
-- Preserves a healthy, already-initialized lab instead of resetting it.
-- Runs one experiment at a time; the FTP client and `dumpcap` capture actual Linux namespace traffic.
-- Fixes capture timing: calls `capture.sh stop` **before** looking for generated files.
-- Uses `mergecap` to combine the three router-interface PCAPNGs into **one file** per experiment.
-- Makes the file available only from that completed job in the currently running web-server process.
-- Converts all shell scripts from Windows CRLF to Unix LF endings, addressing Ubuntu Bash parsing issues.
-- Preserves the CLI networking and experiment tools and existing project documentation.
+- Reused its readable SVG network diagram, color-coded FTP command timeline, and compact segmented mode/NAT/loss controls.
+- Kept the live Flask experiment backend: automatic topology/server setup, N0/N1/N2, Active/Passive, LIST/RETR/STOR, and per-run merged PCAPNG download.
+- Replaced the simulator’s hard-coded FTP messages, outcomes, sample timing, and invented conntrack text with **actual FTP control events returned by `client/ftp_client.py`** and measured result flags.
+- After a real transfer finishes, **Play / Step / Restart** replays the recorded control transcript; the moving packet icon illustrates control message direction, not exact timing or real individual packets. The PCAPNG is the packet-level source of truth.
+- Removed the presentation simulator’s expected-results and deliverables pages: the web application is still a single page and only runs one FTP experiment at a time.
+- Preserved capture merging and restricted downloading to a completed experiment in the current server process.
 
-## Live validation
-
-Static checks and a mocked capture lifecycle test were run in the packaging environment. Flask and Linux namespace/capture functionality need verification on the Ubuntu laptop with root privileges.
-
-Run:
+## Run
 
 ```bash
 sudo .venv/bin/python -m web.app
 ```
 
-Open `http://127.0.0.1:5000`; run N0 Passive RETR and verify the Download button produces a `.pcapng` file. Open it in Wireshark and verify packet traffic is present from the three interfaces. Also test a failing case (N1 Active) to ensure its unsuccessful FTP negotiation remains downloadable.
+Open http://127.0.0.1:5000. Test N0 Passive RETR (success) and N1 Active RETR (expected PORT rejection) and download the PCAPNG from both.
+
+## Verification
+
+The web assets and scripts passed static syntax checks. Browser rendering was inspected using a local static preview. Real namespace/Flask integration must be tested on Ubuntu; this packaging environment lacks Flask and privileged lab networking.

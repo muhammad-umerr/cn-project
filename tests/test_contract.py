@@ -87,3 +87,17 @@ def test_command_uses_argv_not_shell():
     assert result['control_ok'] is True
     assert run.call_args.kwargs['check'] is False
     assert run.call_args.kwargs.get('shell') is None
+
+
+def test_presentation_visuals_use_real_recorded_events():
+    html = (module.ROOT / 'web' / 'templates' / 'index.html').read_text()
+    js = (module.ROOT / 'web' / 'static' / 'app.js').read_text()
+    assert 'id="topo"' in html
+    assert 'id="log"' in html
+    assert 'id="play"' in html and 'id="next"' in html and 'id="reset"' in html
+    assert 'Download current run PCAPNG' in html
+    assert 'loadTimeline(result.transcript)' in js
+    assert 'showCapture(result)' in js
+    assert 'Expected matrix' not in html
+    assert 'Re-roll loss' not in html
+    assert not (module.ROOT / 'presentation').exists()

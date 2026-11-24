@@ -7,10 +7,12 @@ __pycache__/
 results/*
 !results/.gitkeep
 !results/README.md
+!results/pcap/
 !results/conntrack/
 !results/nft/
 !results/screenshots/
 !results/charts/
+results/pcap/*
 results/conntrack/*
 results/nft/*
 results/screenshots/*

@@ -3,77 +3,64 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>FTP Through NAT · Live Laboratory</title>
+  <title>FTP Through NAT | Live Laboratory</title>
   <link rel="stylesheet" href="/static/style.css">
   <script src="/static/app.js" defer></script>
 </head>
 <body>
-<main class="workspace">
-  <header class="header">
-    <div>
-      <div class="eyebrow">CS3001 · Computer Networks / Live demonstration</div>
-      <h1>FTP Through NAT <span>— Active vs Passive</span></h1>
-      <p>Run real FTP operations across Linux network namespaces. Every run records network traffic for Wireshark.</p>
+  <header class="pagehead">
+    <div class="heading">
+      <span class="overline">CS3001 · COMPUTER NETWORKS · LIVE LABORATORY</span>
+      <h1>FTP through NAT <span>Active vs Passive</span></h1>
+      <p>Watch FTP control messages travel across the network, compare the NAT configurations, and download real Wireshark traffic from each experiment.</p>
     </div>
-    <div class="status"><span class="dot" id="statusDot"></span><span id="statusText">Preparing laboratory…</span></div>
+    <div class="livebadge" aria-live="polite"><span id="statusDot" class="statusdot"></span><span id="statusText">Preparing laboratory…</span></div>
   </header>
 
-  <div class="stats">
-    <div class="stat"><small>R1 NAT configuration</small><strong id="statNat">—</strong></div>
-    <div class="stat"><small>Virtual network</small><strong id="statTopology">Checking…</strong></div>
-    <div class="stat"><small>FTP server</small><strong id="statServer">Checking…</strong></div>
-    <div class="stat"><small>Experiment</small><strong id="statJob">Idle</strong></div>
-  </div>
-
-  <section class="panel">
-    <div class="panelhead"><div><div class="eyebrow">NETWORK TOPOLOGY</div><h2>Client → R1 → R2 → Server</h2></div><div class="pill">Auto-configured at startup</div></div>
-    <div class="topology">
-      <div class="node"><div class="nodeicon">▣</div><strong>FTP Client</strong><code>192.168.10.2</code><small>Client namespace</small></div>
-      <div class="edge"><i></i><span>192.168.10.0/24</span></div>
-      <div class="node router"><div class="nodeicon">⇄</div><strong>R1 · NAT</strong><code>192.168.10.1</code><code>10.0.12.1</code></div>
-      <div class="edge"><i></i><span>10.0.12.0/30</span></div>
-      <div class="node router"><div class="nodeicon">⇄</div><strong>R2</strong><code>10.0.12.2</code><code>172.16.20.1</code></div>
-      <div class="edge"><i></i><span>172.16.20.0/24</span></div>
-      <div class="node server"><div class="nodeicon">▤</div><strong>FTP Server</strong><code>172.16.20.10</code><small>TCP 21 / PASV 40000–40100</small></div>
-    </div>
-    <p class="hint">R1 performs ordinary routing (N0), masquerading (N1), or masquerading with the FTP connection-tracking helper (N2). The selected packet-loss rate is applied on the R1–R2 link.</p>
-  </section>
-
-  <div class="two">
-    <section class="panel">
-      <div class="eyebrow">LIVE FTP EXPERIMENT</div>
-      <h2>Choose and run a transfer</h2>
-      <p class="hint">The controller prepares the network on startup. Changing these options configures the real Linux router and FTP client for your next run.</p>
-      <div class="formgrid">
-        <label>NAT condition<select id="nat"><option value="N0">N0 · No NAT</option><option value="N1" selected>N1 · NAT only</option><option value="N2">N2 · NAT + FTP helper</option></select></label>
-        <label>FTP mode<select id="mode"><option value="passive">Passive (PASV)</option><option value="active">Active (PORT)</option></select></label>
-        <label>Operation<select id="operation"><option value="retr">RETR · Download a file</option><option value="list">LIST · Directory listing</option><option value="stor">STOR · Upload a file</option></select></label>
-        <label>Packet loss<select id="loss"><option value="0">0% · Baseline</option><option value="2">2% · Moderate</option><option value="5">5% · High</option></select></label>
+  <main>
+    <section class="card controls">
+      <div class="sectionhead"><div><span class="overline">EXPERIMENT SETTINGS</span><h2>Configure the live transfer</h2></div><span class="subtle">Applied when you run</span></div>
+      <div class="controlgrid">
+        <div class="control"><span class="controltitle">FTP mode</span><div class="segments" data-field="mode"><button type="button" data-value="passive" aria-pressed="true">Passive · PASV</button><button type="button" data-value="active" aria-pressed="false">Active · PORT</button></div></div>
+        <div class="control"><span class="controltitle">R1 NAT condition</span><div class="segments" data-field="nat"><button type="button" data-value="N0" aria-pressed="false">N0 · Routed</button><button type="button" data-value="N1" aria-pressed="true">N1 · NAT</button><button type="button" data-value="N2" aria-pressed="false">N2 · Helper</button></div></div>
+        <div class="control"><span class="controltitle">Packet loss</span><div class="segments" data-field="loss"><button type="button" data-value="0" aria-pressed="true">0%</button><button type="button" data-value="2" aria-pressed="false">2%</button><button type="button" data-value="5" aria-pressed="false">5%</button></div></div>
+        <div class="control"><label class="controltitle" for="operation">FTP operation</label><select id="operation"><option value="retr">RETR · Download</option><option value="list">LIST · Directory listing</option><option value="stor">STOR · Upload</option></select></div>
       </div>
-      <button class="primary" id="run">▶ &nbsp; Run live FTP experiment <span>→</span></button>
+      <div class="actionbar"><button id="run" class="primary" type="button">▶ Run live FTP experiment</button><span id="jobProgress" class="subtle" role="status" aria-live="polite">Network initialization in progress…</span></div>
     </section>
-    <section class="panel">
-      <div class="eyebrow">CURRENT RUN</div>
-      <div class="panelhead"><h2>Result & packet capture</h2><span id="jobBadge" class="pill">Not started</span></div>
-      <div class="progress" id="jobProgress" role="status" aria-live="polite">Ready to perform a transfer.</div>
-      <div class="resultcards" id="resultCards"></div>
-      <div class="capture">
-        <strong>Wireshark capture</strong>
-        <p class="hint">After each run, download one <code>.pcapng</code> with packets from R1 inside, R1 outside and R2 server-side interfaces.</p>
-        <a id="downloadCapture" class="download disabled" aria-disabled="true">↓ Download current run PCAPNG</a>
-        <small id="captureNote">Available after a completed experiment, including failed FTP transfers.</small>
-      </div>
-    </section>
-  </div>
 
-  <section class="panel">
-    <div class="eyebrow">REAL PROTOCOL EXCHANGE</div><h2>FTP control conversation & measured output</h2>
-    <div class="two transcripts">
-      <div><h3>FTP control commands and responses</h3><pre id="transcript">Run a transfer to see the actual FTP dialogue.</pre></div>
-      <div><h3>Current experiment result</h3><pre id="response">No experiment performed yet.</pre></div>
+    <section class="card topologycard">
+      <div class="sectionhead"><div><span class="overline">VIRTUAL NETWORK</span><h2>Client → R1 → R2 → Server</h2></div><span class="chip" id="topologyState">Checking topology…</span></div>
+      <svg id="topo" viewBox="0 0 860 238" role="img" aria-label="FTP client connected to router R1 over 192.168.10.0/24, router R1 to R2 over 10.0.12.0/30, and R2 to server over 172.16.20.0/24. The packet indicator illustrates the direction of the selected FTP control message.">
+        <line class="netlink" x1="130" y1="98" x2="290" y2="98"/><line class="netlink" x1="350" y1="98" x2="510" y2="98"/><line class="netlink" x1="570" y1="98" x2="730" y2="98"/>
+        <g class="netnode"><rect x="30" y="62" width="140" height="72" rx="12"/><text x="100" y="88" text-anchor="middle" class="nodeheading">FTP CLIENT</text><text x="100" y="112" text-anchor="middle" class="nodeip">192.168.10.2</text></g>
+        <g class="netnode router"><rect x="250" y="62" width="140" height="72" rx="12"/><text x="320" y="88" text-anchor="middle" class="nodeheading">R1 · NAT</text><text x="320" y="112" text-anchor="middle" class="nodeip">10.0.12.1</text></g>
+        <g class="netnode router"><rect x="470" y="62" width="140" height="72" rx="12"/><text x="540" y="88" text-anchor="middle" class="nodeheading">R2</text><text x="540" y="112" text-anchor="middle" class="nodeip">10.0.12.2</text></g>
+        <g class="netnode"><rect x="690" y="62" width="140" height="72" rx="12"/><text x="760" y="88" text-anchor="middle" class="nodeheading">FTP SERVER</text><text x="760" y="112" text-anchor="middle" class="nodeip">172.16.20.10</text></g>
+        <text x="210" y="162" text-anchor="middle" class="netlabel">192.168.10.0/24</text><text x="430" y="162" text-anchor="middle" class="netlabel">10.0.12.0/30</text><text x="650" y="162" text-anchor="middle" class="netlabel">172.16.20.0/24</text>
+        <text x="100" y="39" text-anchor="middle" class="netlabel">Control: client → TCP 21</text><text id="natDescription" x="320" y="39" text-anchor="middle" class="netlabel">N1 · masquerading</text><text x="760" y="39" text-anchor="middle" class="netlabel">21 · 20 · 40000–40100</text>
+        <text x="430" y="198" text-anchor="middle" class="netlabel">R1–R2: bandwidth limit + selected packet loss</text>
+        <circle id="packetDot" cx="-25" cy="98" r="9" class="packetdot" opacity="0"/>
+      </svg>
+      <div class="legend"><span><i class="legenddot"></i> Control-message direction</span><span id="flowDescription">Start an experiment to replay its actual FTP control exchange.</span></div>
+    </section>
+
+    <section id="verdict" class="verdict neutral" aria-live="polite">Select a configuration, then run the experiment. The topology animation will replay recorded FTP messages after the run completes.</section>
+
+    <div class="columns">
+      <section class="card">
+        <div class="sectionhead"><div><span class="overline">RECORDED FTP EXCHANGE</span><h2>Command & reply timeline</h2></div><span class="chip" id="timelineCount">No messages</span></div>
+        <div class="playbackbar"><button id="play" type="button" disabled>▶ Play</button><button id="next" type="button" disabled>Step →</button><button id="reset" type="button" disabled>↺ Restart</button><span class="subtle">Playback is explanatory; packet timestamps are in the PCAPNG.</span></div>
+        <div id="log" class="eventlog" aria-live="polite"><div class="empty">Run an experiment to see the actual FTP control dialogue.</div></div>
+      </section>
+      <section class="card summarycard">
+        <div class="sectionhead"><div><span class="overline">MEASURED OUTCOME</span><h2>Current experiment</h2></div><span class="chip" id="jobBadge">Not started</span></div>
+        <div class="results" id="resultCards"><div class="empty">Waiting for a real FTP experiment.</div></div>
+        <div class="factblock"><h3>Execution details</h3><pre id="response">No experiment performed yet.</pre></div>
+        <div class="capturebox"><div><h3>Wireshark capture</h3><p>One combined, multi-interface <code>.pcapng</code> from this run, including failed FTP operations.</p></div><a id="downloadCapture" class="download disabled" aria-disabled="true">↓ Download current run PCAPNG</a><small id="captureNote">Available when the capture has been saved.</small></div>
+      </section>
     </div>
-  </section>
-  <footer>Local laboratory only · Captures contain plaintext FTP traffic, including lab credentials. Share responsibly.</footer>
-</main>
+    <footer>Real FTP experiments · Isolated Linux namespaces · Plaintext lab credentials may appear in captures · Localhost only</footer>
+  </main>
 </body>
 </html>
