@@ -1,22 +1,134 @@
-const $=q=>document.querySelector(q), $$=q=>[...document.querySelectorAll(q)];
-let currentJob=null, diagnosis={}, latestResults={};
-async function api(path,options={}){const r=await fetch(path,options);let d;try{d=await r.json()}catch{throw Error('Backend response was not JSON')}if(!r.ok)throw Error(d.error||`HTTP ${r.status}`);return d}
-function post(path,data={}){return api(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)})}
-function progress(t){$('#jobProgress').textContent=t}
-function badge(t){$('#jobBadge').textContent=t}
-function fmt(v,suffix=''){return v===undefined||v===null?'—':typeof v==='number'?v.toFixed(2)+suffix:String(v)}
-function truth(v){return v===true||v==='yes'||v==='True'||v==='true'}
-function flag(v){return truth(v)?'<span class="good">✓ Yes</span>':'<span class="bad">✕ No</span>'}
-async function refreshStatus(){try{let s=await api('/api/status');$('#statNat').textContent=s.nat;$('#statTopology').textContent=s.ready?'Ready':'Offline';$('#statServer').textContent=s.server_listening?'Listening':'Offline';$('#statJob').textContent=s.active_job?'Running':'Idle';$('#statusText').textContent=s.ready?'Network online':'Network offline';$('#statusDot').classList.toggle('ok',s.ready);if(!s.root)progress('Controller not privileged. Run using the documented sudo command.')}catch(e){$('#statusText').textContent='Backend unavailable'}}
-async function watch(job){currentJob=job.id;badge(job.kind+' · running');$$('button').filter(b=>b.dataset.action||b.dataset.batch||b.id==='run').forEach(b=>b.disabled=true);let count=0;while(count++<2000){await new Promise(res=>setTimeout(res,1000));let state;try{state=await api('/api/jobs/'+job.id)}catch(e){progress(e.message);break}progress(state.step||'Running');if(state.status==='completed'||state.status==='failed'){badge(state.status);if(state.status==='failed'){progress('FAILED: '+state.error)}else{progress('Completed · '+state.kind);if(state.kind==='experiment')showExperiment(state.result);else $('#response').textContent=(state.result?.output||JSON.stringify(state.result,null,2)).slice(-20000)}break}}$$('button').forEach(b=>b.disabled=false);currentJob=null;refreshStatus();refreshResults()}
-function showExperiment(r){const op=r.configuration.operation,success=r[op+'_ok'],dc=r[op+'_data_connected'];let cards=[['Control',flag(r.control_ok)],['Data channel',flag(dc)],['Operation',flag(success)],['Throughput',fmt(r[op+'_throughput_mbps'],' Mb/s')]];$('#resultCards').innerHTML=cards.map(([k,v])=>`<div class="resultcard"><small>${k}</small><b>${v}</b></div>`).join('');$('#transcript').textContent=(r.transcript||[]).map(e=>(e.direction==='client'?'→ CLIENT':'← SERVER')+'  '+e.message).join('\n')||'No dialogue';let ev=r.evidence||{};$('#response').textContent=JSON.stringify({configuration:r.configuration,control_setup_ms:r.control_setup_ms,operation_ok:success,data_connected:dc,bytes:r[op+'_bytes'],data_setup_ms:r[op+'_data_setup_ms'],data_connect_ms:r[op+'_data_conn_ms'],transfer_s:r[op+'_transfer_s'],throughput_mbps:r[op+'_throughput_mbps'],sha256:r[op+'_sha256'],failure_stage:r.failure_stage,error:r.error,captures:r.capture_files,expectations_sampled:ev.expectations_observed},null,2);diagnosis=ev;$('#diagnostic').textContent=ev.conntrack_observed||'(no tracking entries observed)';refreshResults()}
-$('#run').onclick=async()=>{try{const job=await post('/api/experiment',{nat:$('#nat').value,mode:$('#mode').value,operation:$('#operation').value,loss:+$('#loss').value});watch(job)}catch(e){progress('ERROR: '+e.message)}};
-$$('[data-action]').forEach(b=>b.onclick=async()=>{if(b.dataset.action==='teardown'&&!confirm('Remove the laboratory namespaces?'))return;try{watch(await post('/api/lab/'+b.dataset.action))}catch(e){progress('ERROR: '+e.message)}});
-$$('[data-batch]').forEach(b=>b.onclick=async()=>{if(b.dataset.batch==='experiments'&&!confirm(`Run 18 combinations × ${$('#reps').value} repeats? Existing CSV will ${$('#reset').checked?'be replaced':'be appended'}.`))return;try{watch(await post('/api/batch/'+b.dataset.batch,{reps:+$('#reps').value,reset:$('#reset').checked}))}catch(e){progress('ERROR: '+e.message)}});
-async function diagnostics(){try{let d=await api('/api/diagnostics');diagnosis=d.state||{};showDiagnostic()}catch(e){$('#diagnostic').textContent=e.message}}
-function showDiagnostic(){$('#diagnostic').textContent=diagnosis[$('#diagSelect').value]||'(empty or unavailable)'}
-$('#diagnose').onclick=diagnostics;$('#diagSelect').onchange=showDiagnostic;
-async function refreshResults(){try{latestResults=await api('/api/results');const m=latestResults.matrix||[];$('#matrix').innerHTML=m.length?'<thead><tr>'+['NAT','FTP','Control','Data (LIST)','LIST','RETR','STOR','Failure'].map(h=>'<th>'+h+'</th>').join('')+'</tr></thead><tbody>'+m.map(r=>'<tr><td>'+r.nat+'</td><td>'+r.mode+'</td>'+['control_ok','list_data_conn','list_ok','retr_ok','stor_ok'].map(k=>'<td>'+flag(r[k])+'</td>').join('')+'<td>'+(r.failure_stage||'—')+'</td></tr>').join('')+'</tbody>':'<tr><td>No real matrix results. Run Build success matrix.</td></tr>';$('#summary').textContent=latestResults.summary_markdown||'No analysis generated yet.';$('#captures').innerHTML=latestResults.captures.length?latestResults.captures.map(name=>{const a=document.createElement('a');a.href='/api/artifacts/pcap/'+encodeURIComponent(name);a.textContent='⇩  '+name;return a.outerHTML}).join(''):'No captures yet. Run a live experiment or evidence collection.';$$('.chartgrid img').forEach(i=>{i.style.display='block';i.src=i.src.split('?')[0]+'?t='+Date.now()})}catch(e){console.error(e)}}
-$('#reloadResults').onclick=refreshResults;$('#reloadCaptures').onclick=refreshResults;$('#refresh').onclick=refreshStatus;
-$$('[data-tab]').forEach(b=>b.onclick=()=>{$$('[data-tab]').forEach(x=>x.classList.toggle('active',x===b));$$('.tab').forEach(x=>x.classList.toggle('visible',x.id===b.dataset.tab));if(b.dataset.tab==='results'||b.dataset.tab==='evidence')refreshResults()});
-refreshStatus();refreshResults();setInterval(refreshStatus,7000);
+const $ = selector => document.querySelector(selector);
+let running = false;
+
+async function api(path, options = {}) {
+  const response = await fetch(path, options);
+  let payload;
+  try { payload = await response.json(); }
+  catch { throw new Error('The server did not return JSON.'); }
+  if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+  return payload;
+}
+function post(path, body) {
+  return api(path, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+}
+const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+const value = x => x === undefined || x === null ? '—' : String(x);
+const metric = (x, suffix) => typeof x === 'number' ? `${x.toFixed(2)} ${suffix}` : '—';
+const yes = x => x === true ? '✓ Success' : '✕ Failed';
+
+function clearCapture(note = 'Available after a completed experiment.') {
+  const download = $('#downloadCapture');
+  download.removeAttribute('href');
+  download.classList.add('disabled');
+  download.setAttribute('aria-disabled', 'true');
+  $('#captureNote').textContent = note;
+}
+function captureLink(result) {
+  if (result.capture_available && result.capture_url) {
+    const download = $('#downloadCapture');
+    download.href = result.capture_url;
+    download.classList.remove('disabled');
+    download.removeAttribute('aria-disabled');
+    $('#captureNote').textContent = 'One multi-interface Wireshark file for this experiment. The next run will replace this link.';
+  } else {
+    clearCapture(`Capture unavailable: ${result.capture_error || 'No capture was produced.'}`);
+  }
+}
+async function refreshStatus() {
+  try {
+    const state = await api('/api/status');
+    $('#statNat').textContent = state.nat || '—';
+    $('#statTopology').textContent = state.ready ? 'Ready' : 'Offline';
+    $('#statServer').textContent = state.server_listening ? 'Listening :21' : 'Offline';
+    $('#statJob').textContent = state.active_job ? 'Running' : 'Idle';
+    $('#statusText').textContent = state.ready ? 'Laboratory ready' : state.startup.message;
+    $('#statusDot').classList.toggle('ok', state.ready);
+    if (!running) $('#run').disabled = !state.ready;
+  } catch (e) {
+    $('#statusText').textContent = 'Web backend unavailable';
+    $('#run').disabled = true;
+  }
+}
+function showResult(result) {
+  const op = result.configuration.operation;
+  const success = result[`${op}_ok`];
+  const connected = result[`${op}_data_connected`];
+  const metrics = [
+    ['Control', yes(result.control_ok)],
+    ['Data connection', yes(connected)],
+    [op.toUpperCase(), yes(success)],
+    ['Throughput', metric(result[`${op}_throughput_mbps`], 'Mbit/s')]
+  ];
+  $('#resultCards').replaceChildren(...metrics.map(([name, output]) => {
+    const item = document.createElement('div');
+    item.className = 'resultcard';
+    const title = document.createElement('small'); title.textContent = name;
+    const body = document.createElement('b'); body.textContent = output;
+    body.className = output.startsWith('✓') ? 'good' : output.startsWith('✕') ? 'bad' : '';
+    item.append(title, body);
+    return item;
+  }));
+  $('#transcript').textContent = (result.transcript || [])
+    .map(event => `${event.direction === 'client' ? 'CLIENT →' : 'SERVER ←'} ${event.message}`)
+    .join('\n') || 'No FTP transcript returned.';
+  $('#response').textContent = JSON.stringify({
+    configuration: result.configuration,
+    control_setup_ms: result.control_setup_ms,
+    operation_ok: success,
+    data_connected: connected,
+    bytes: result[`${op}_bytes`],
+    data_setup_ms: result[`${op}_data_setup_ms`],
+    transfer_s: result[`${op}_transfer_s`],
+    throughput_mbps: result[`${op}_throughput_mbps`],
+    failure_stage: result.failure_stage,
+    error: result.error
+  }, null, 2);
+  captureLink(result);
+}
+async function run() {
+  if (running) return;
+  running = true;
+  $('#run').disabled = true;
+  $('#jobBadge').textContent = 'Running';
+  $('#resultCards').replaceChildren();
+  $('#transcript').textContent = 'Executing the FTP client…';
+  $('#response').textContent = 'Waiting for experimental result…';
+  clearCapture('The previous run is no longer the current run. Capturing new packets…');
+  try {
+    const job = await post('/api/experiment', {
+      nat: $('#nat').value, mode: $('#mode').value,
+      operation: $('#operation').value, loss: Number($('#loss').value)
+    });
+    let finished = false;
+    for (let attempt = 0; attempt < 300; attempt++) {
+      await delay(1000);
+      const state = await api(`/api/jobs/${job.id}`);
+      $('#jobProgress').textContent = state.step || 'Running';
+      if (state.status === 'completed') {
+        finished = true;
+        $('#jobBadge').textContent = 'Completed';
+        $('#jobProgress').textContent = 'Experiment finished. Real capture available below if saved successfully.';
+        showResult(state.result);
+        break;
+      }
+      if (state.status === 'failed') {
+        finished = true;
+        $('#jobBadge').textContent = 'Failed';
+        $('#jobProgress').textContent = state.error || 'Experiment failed';
+        clearCapture('Capture unavailable because the experiment did not finish.');
+        break;
+      }
+    }
+    if (!finished) $('#jobProgress').textContent = 'Still running; refresh the page to check system status.';
+  } catch (error) {
+    $('#jobBadge').textContent = 'Error';
+    $('#jobProgress').textContent = error.message;
+  } finally {
+    running = false;
+    await refreshStatus();
+  }
+}
+$('#run').addEventListener('click', run);
+refreshStatus();
+setInterval(refreshStatus, 6000);

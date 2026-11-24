@@ -1,21 +1,22 @@
 #!/usr/bin/env python3
-"""Local-only Flask controller for the genuine Linux namespace laboratory.
-All user inputs are mapped to fixed subprocess argv; no shell interpolation.
-Run with sudo -E .venv/bin/python -m web.app (loopback only).
+"""Local-only Flask interface for FTP/NAT single-run demonstrations.
+
+Run as root with `sudo .venv/bin/python -m web.app`. The server bootstraps
+missing lab components, and each experiment exports a merged, real PCAPNG.
 """
 from __future__ import annotations
-import csv
+
 import datetime as dt
 import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import threading
-import time
 import uuid
 
-from flask import Flask, jsonify, render_template, request, send_from_directory, abort
+from flask import Flask, abort, jsonify, render_template, request, send_file
 
 ROOT = Path(__file__).resolve().parent.parent
 RESULTS = ROOT / "results"
@@ -25,138 +26,183 @@ NATS = ("N0", "N1", "N2")
 MODES = ("active", "passive")
 OPERATIONS = ("list", "retr", "stor")
 LOSSES = (0, 2, 5)
+
 app = Flask(__name__)
 app.json.sort_keys = False
-jobs = {}
+jobs: dict[str, dict] = {}
 lock = threading.Lock()
-active_id = None
+active_id: str | None = None
+startup = {"phase": "pending", "message": "Laboratory startup not yet run"}
 
 
 def command(argv, timeout=90, json_output=False):
-    """A finite, explicit argument vector. Never run with shell=True."""
+    """Execute a fixed command vector, with no shell expansion."""
+    args = [str(item) for item in argv]
     try:
-        p = subprocess.run([str(x) for x in argv], cwd=ROOT, capture_output=True,
-                           text=True, timeout=timeout, check=False)
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError(f"Timed out after {timeout}s: {argv[0]}") from exc
-    output = (p.stdout or "")[-75000:]
-    err = (p.stderr or "")[-12000:]
+        proc = subprocess.run(args, cwd=ROOT, capture_output=True, text=True,
+                              timeout=timeout, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(f"Could not execute {args[0]}: {exc}") from exc
+    output, error = (proc.stdout or "")[-75000:], (proc.stderr or "")[-12000:]
     if json_output:
         if not output.strip():
-            raise RuntimeError(f"No JSON from FTP client; exit={p.returncode}; stderr={err}")
+            raise RuntimeError(f"FTP client returned no JSON (exit {proc.returncode}): {error}")
         try:
-            data = json.loads(output)
+            result = json.loads(output)
         except json.JSONDecodeError as exc:
-            raise RuntimeError(f"Invalid FTP client JSON: {output[-2000:]} {err}") from exc
-        data["process_returncode"] = p.returncode
-        data["stderr"] = err
-        return data
-    if p.returncode:
-        raise RuntimeError(f"Command failed (exit {p.returncode}): {' '.join(map(str, argv))}\n{err}\n{output}")
+            raise RuntimeError(f"FTP client returned invalid JSON: {output[-2000:]} {error}") from exc
+        result["process_returncode"] = proc.returncode
+        result["stderr"] = error
+        return result
+    if proc.returncode:
+        raise RuntimeError(f"Command failed (exit {proc.returncode}): {' '.join(args)}\n{error}\n{output}")
     return output
 
 
 def namespace_exists():
     try:
-        result = command(["ip", "netns", "list"], timeout=5)
-    except Exception:
+        listing = command(["ip", "netns", "list"], 5)
+    except RuntimeError:
         return False
-    return all(re.search(r"^" + x + r"(?:\s|$)", result, re.M) for x in ("ftp-client", "ftp-server", "r1", "r2"))
+    return all(re.search(r"^" + re.escape(ns) + r"(?:\s|$)", listing, re.M)
+               for ns in ("ftp-client", "ftp-server", "r1", "r2"))
 
 
-def safe_read(path, limit=25000):
-    try:
-        return path.read_text(errors="replace")[-limit:] if path.is_file() else ""
-    except OSError:
-        return ""
-
-
-def snap():
-    result = {}
-    for kind, argv in {
-        "conntrack": ["ip", "netns", "exec", "r1", "conntrack", "-L"],
-        "expectations": ["ip", "netns", "exec", "r1", "conntrack", "-L", "expect"],
-        "nftables": ["ip", "netns", "exec", "r1", "nft", "list", "ruleset"],
-        "qdisc_r1": ["ip", "netns", "exec", "r1", "tc", "-s", "qdisc", "show", "dev", "eth-out"],
-        "qdisc_r2": ["ip", "netns", "exec", "r2", "tc", "-s", "qdisc", "show", "dev", "eth-in"],
-    }.items():
+def topology_healthy():
+    if not namespace_exists():
+        return False
+    for ns, iface in (("ftp-client", "eth0"), ("r1", "eth-in"),
+                      ("r1", "eth-out"), ("r2", "eth-in"),
+                      ("r2", "eth-srv"), ("ftp-server", "eth0")):
         try:
-            # conntrack exits nonzero when its table is empty; keep the diagnostic text
-            p = subprocess.run(argv, capture_output=True, text=True, timeout=8)
-            result[kind] = (p.stdout or p.stderr)[-30000:]
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            result[kind] = str(exc)
-    return result
+            command(["ip", "netns", "exec", ns, "ip", "link", "show", iface], 5)
+        except RuntimeError:
+            return False
+    return True
+
+
+def server_listening():
+    if not namespace_exists():
+        return False
+    try:
+        output = command(["ip", "netns", "exec", "ftp-server", "ss", "-ltn"], 5)
+        return any(re.search(r"(?:\S+:)?21\s", line) for line in output.splitlines())
+    except RuntimeError:
+        return False
+
+
+def bootstrap():
+    """Initialize missing components, without recreating a healthy topology.
+
+    Must run before accepting HTTP requests. Intentionally does not run at
+    module import so offline tests can import the Flask app without root.
+    """
+    global startup
+    startup = {"phase": "initializing", "message": "Checking network namespaces"}
+    try:
+        if os.geteuid() != 0:
+            raise RuntimeError("Start with sudo; configuring namespaces requires root privileges")
+        for executable in ("ip", "dumpcap", "mergecap", "nft", "tc", "vsftpd"):
+            if shutil.which(executable) is None:
+                raise RuntimeError(f"Required command not installed: {executable}; see README")
+        if not topology_healthy():
+            startup["message"] = "Building missing Linux namespace topology"
+            command([SCRIPTS / "setup_topology.sh"], 90)
+        if not server_listening():
+            startup["message"] = "Starting the FTP server in ftp-server"
+            command([SCRIPTS / "setup_server.sh"], 90)
+        if not server_listening():
+            raise RuntimeError("FTP server is not listening on TCP port 21")
+        # Initialize N1 only on a fresh topology or when no state has been set;
+        # a healthy existing lab retains its current NAT configuration.
+        nat_state = Path("/tmp/cn-nat-state")
+        if not nat_state.is_file() or nat_state.read_text().strip() not in NATS:
+            startup["message"] = "Applying default N1 NAT and 0% loss"
+            command([SCRIPTS / "nat.sh", "N1"], 20)
+            command([SCRIPTS / "impair.sh", "0"], 20)
+        startup = {"phase": "ready", "message": "Network and FTP server ready"}
+    except Exception as exc:
+        startup = {"phase": "failed", "message": str(exc)}
+    return startup["phase"] == "ready"
+
+
+def capture_bundle(jobid, tag):
+    """Merge the three capture interfaces into one multi-interface PCAPNG."""
+    folder = RESULTS / "pcap"
+    files = [folder / f"{tag}__{name}.pcapng"
+             for name in ("r1-inside", "r1-outside", "r2-server")]
+    missing = [p.name for p in files if not p.is_file() or p.stat().st_size < 60]
+    if missing:
+        raise RuntimeError("Capture missing or empty: " + ", ".join(missing))
+    merged_dir = RESULTS / "web_runs" / "captures"
+    merged_dir.mkdir(parents=True, exist_ok=True)
+    final = merged_dir / (jobid + ".pcapng")
+    # mergecap preserves per-interface metadata and timestamp ordering.
+    command(["mergecap", "-w", final, *files], timeout=45)
+    if not final.is_file() or final.stat().st_size < 100:
+        raise RuntimeError("Merged PCAPNG was not created")
+    return final
 
 
 def run_one(spec, job):
-    nat, mode, loss, op = spec["nat"], spec["mode"], spec["loss"], spec["operation"]
-    job["step"] = "Configuring NAT and connection-tracking state"
+    nat, mode, loss, op = (spec[k] for k in ("nat", "mode", "loss", "operation"))
+    job["step"] = "Applying NAT and controlled packet loss"
     command([SCRIPTS / "nat.sh", nat], 20)
-    job["step"] = "Applying transit-link bandwidth and loss"
     command([SCRIPTS / "impair.sh", str(loss)], 20)
-    job["step"] = "Starting packet capture on R1 and R2"
-    tag = "web_" + job["id"].replace("-", "")[:20]
+    tag = "web_" + job["id"].replace("-", "")
     capture_started = False
-    evidence = {}
+    result = None
+    capture_error = None
     try:
-        command([SCRIPTS / "capture.sh", "start", tag], 15)
+        job["step"] = "Starting three real packet captures"
+        command([SCRIPTS / "capture.sh", "start", tag], 20)
         capture_started = True
-        job["step"] = "Executing the real FTP client inside ftp-client"
-        # Poll captures conntrack/expectation entries during the live operation
-        entries = {"conntrack": set(), "expectations": set()}
-        stop = threading.Event()
-        def sampler():
-            while not stop.wait(0.2):
-                for label, args in (("conntrack", ["conntrack", "-L"]),
-                                    ("expectations", ["conntrack", "-L", "expect"])):
-                    try:
-                        p = subprocess.run(["ip", "netns", "exec", "r1", *args],
-                                           capture_output=True, text=True, timeout=2)
-                        entries[label].update(x for x in p.stdout.splitlines() if x.strip())
-                    except (OSError, subprocess.TimeoutExpired):
-                        pass
-        observer = threading.Thread(target=sampler, daemon=True)
-        observer.start()
-        try:
-            result = command(["ip", "netns", "exec", "ftp-client", "python3", CLIENT,
-                              "--mode", mode, "--ops", op, "--hold", "0.8",
-                              "--timeout", "12", "--op-timeout", "120"],
-                             timeout=220, json_output=True)
-        finally:
-            stop.set()
-            observer.join(timeout=4)
-        evidence = snap()
-        evidence["conntrack_observed"] = "\n".join(sorted(entries["conntrack"]))
-        evidence["expectations_observed"] = "\n".join(sorted(entries["expectations"]))
-        result["configuration"] = spec
-        result["evidence"] = evidence
-        result["capture_files"] = sorted(p.name for p in (RESULTS / "pcap").glob(tag + "*.pcapng"))
-        return result
+        job["step"] = f"Running {mode.upper()} FTP {op.upper()}"
+        result = command(["ip", "netns", "exec", "ftp-client", "python3", CLIENT,
+                          "--mode", mode, "--ops", op,
+                          "--hold", "0.8", "--timeout", "12", "--op-timeout", "120"],
+                         timeout=220, json_output=True)
     finally:
         if capture_started:
-            job["step"] = "Finalizing capture files"
+            job["step"] = "Closing and saving packet captures"
             try:
-                command([SCRIPTS / "capture.sh", "stop"], 15)
+                command([SCRIPTS / "capture.sh", "stop"], 25)
             except Exception as exc:
-                job["capture_warning"] = str(exc)
+                capture_error = str(exc)
+    if result is None:
+        raise RuntimeError("FTP execution did not return a result")
+    result["configuration"] = spec
+    job["step"] = "Creating a single Wireshark capture"
+    try:
+        bundle = capture_bundle(job["id"], tag)
+        job["capture_path"] = str(bundle)
+        result["capture_available"] = True
+        result["capture_url"] = f"/api/jobs/{job['id']}/capture"
+        result["capture_filename"] = f"ftp_{nat}_{mode}_{op}_{loss}pct_{job['id'][:8]}.pcapng"
+    except Exception as exc:
+        result["capture_available"] = False
+        result["capture_error"] = str(exc)
+    if capture_error:
+        result["capture_error"] = (result.get("capture_error", "") + " " + capture_error).strip()
+    return result
 
 
-def start_job(kind, fn):
+def start_job(spec):
     global active_id
     with lock:
         if active_id is not None:
             return None
         jobid = str(uuid.uuid4())
-        job = {"id": jobid, "kind": kind, "status": "running", "step": "Queued",
-               "started": dt.datetime.now(dt.timezone.utc).isoformat(), "result": None, "error": None}
+        job = {"id": jobid, "kind": "experiment", "status": "running",
+               "step": "Queued", "started": dt.datetime.now(dt.timezone.utc).isoformat(),
+               "result": None, "error": None}
         jobs[jobid] = job
         active_id = jobid
 
     def runner():
         global active_id
         try:
-            job["result"] = fn(job)
+            job["result"] = run_one(spec, job)
             job["status"] = "completed"
         except Exception as exc:
             job["error"] = str(exc)
@@ -165,21 +211,20 @@ def start_job(kind, fn):
             job["finished"] = dt.datetime.now(dt.timezone.utc).isoformat()
             with lock:
                 active_id = None
-            # persist the last 200 job summaries; real data, not fabricated
             folder = RESULTS / "web_runs"
-            folder.mkdir(exist_ok=True)
+            folder.mkdir(parents=True, exist_ok=True)
             try:
-                (folder / (jobid + ".json")).write_text(json.dumps(job, indent=2, default=str))
+                # The private filesystem path is never exposed in API JSON.
+                record = {k: v for k, v in job.items() if k != "capture_path"}
+                (folder / (jobid + ".json")).write_text(json.dumps(record, indent=2))
             except OSError:
                 pass
     threading.Thread(target=runner, daemon=True).start()
     return job
 
 
-def require_root():
-    if os.geteuid() != 0:
-        return jsonify({"error": "Web controller must be started as root for Linux namespaces; see README."}), 503
-    return None
+def public_job(job):
+    return {k: v for k, v in job.items() if k != "capture_path"}
 
 
 @app.get("/")
@@ -189,133 +234,57 @@ def index():
 
 @app.get("/api/status")
 def status():
-    return jsonify({"ready": namespace_exists(), "root": os.geteuid() == 0,
-                    "nat": safe_read(Path("/tmp/cn-nat-state"), 32).strip() or "unknown",
-                    "active_job": active_id,
-                    "server_listening": _server_listening()})
-
-
-def _server_listening():
-    if not namespace_exists():
-        return False
+    natfile = Path("/tmp/cn-nat-state")
     try:
-        p = subprocess.run(["ip", "netns", "exec", "ftp-server", "ss", "-ltn"],
-                           capture_output=True, text=True, timeout=5)
-        return bool(re.search(r":21\s", p.stdout))
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-
-
-@app.post("/api/lab/<action>")
-def lab_action(action):
-    if (error := require_root()) is not None:
-        return error
-    commands = {"setup": [SCRIPTS / "setup_topology.sh"],
-                "server": [SCRIPTS / "setup_server.sh"],
-                "verify": [SCRIPTS / "verify.sh"],
-                "teardown": [SCRIPTS / "teardown.sh"]}
-    if action not in commands:
-        abort(404)
-    def fn(job):
-        job["step"] = f"Running {action}"
-        return {"output": command(commands[action], timeout=90 if action != "verify" else 110)}
-    job = start_job(action, fn)
-    return (jsonify(job), 202) if job else (jsonify({"error": "Another job is running"}), 409)
+        nat = natfile.read_text().strip() if natfile.is_file() else "unknown"
+    except OSError:
+        nat = "unknown"
+    return jsonify({"ready": startup["phase"] == "ready" and topology_healthy() and server_listening(),
+                    "startup": startup, "nat": nat, "active_job": active_id,
+                    "server_listening": server_listening()})
 
 
 @app.post("/api/experiment")
 def experiment():
-    if (error := require_root()) is not None:
-        return error
+    if os.geteuid() != 0:
+        return jsonify({"error": "Controller needs root privileges; see README"}), 503
+    if startup["phase"] != "ready":
+        return jsonify({"error": "Laboratory not ready: " + startup["message"]}), 503
     body = request.get_json(silent=True) or {}
-    if body.get("nat") not in NATS or body.get("mode") not in MODES or body.get("operation") not in OPERATIONS or type(body.get("loss")) is not int or body["loss"] not in LOSSES:
-        return jsonify({"error": "Invalid configuration. Use N0/N1/N2, active/passive, list/retr/stor, loss 0/2/5."}), 400
-    if not namespace_exists():
-        return jsonify({"error": "Topology is not running. Run Setup topology and Start server first."}), 409
-    job = start_job("experiment", lambda j: run_one(body, j))
-    return (jsonify(job), 202) if job else (jsonify({"error": "Another job is running"}), 409)
-
-
-@app.post("/api/batch/<action>")
-def batch(action):
-    if (error := require_root()) is not None:
-        return error
-    if action not in {"matrix", "evidence", "experiments", "analysis"}:
-        abort(404)
-    body = request.get_json(silent=True) or {}
-    reps = body.get("reps", 3)
-    if type(reps) is not int or not (1 <= reps <= 10):
-        return jsonify({"error": "Repetitions must be an integer 1–10."}), 400
-    if action != "analysis" and not namespace_exists():
-        return jsonify({"error": "Topology is not running"}), 409
-    def fn(job):
-        job["step"] = f"Running {action}; this can take several minutes"
-        if action == "analysis":
-            return {"output": command(["python3", ROOT / "tools" / "analyze.py"], 60)}
-        args = ["python3", ROOT / "tools" / "run.py", action]
-        if action == "experiments":
-            args += ["--reps", str(reps)]
-            if body.get("reset") is True:
-                args.append("--reset")
-        return {"output": command(args, 3600)}
-    job = start_job(action, fn)
-    return (jsonify(job), 202) if job else (jsonify({"error": "Another job is running"}), 409)
+    if (body.get("nat") not in NATS or body.get("mode") not in MODES
+            or body.get("operation") not in OPERATIONS
+            or type(body.get("loss")) is not int or body["loss"] not in LOSSES):
+        return jsonify({"error": "Invalid NAT, FTP mode, operation, or packet loss value"}), 400
+    if not topology_healthy() or not server_listening():
+        return jsonify({"error": "Laboratory components stopped. Restart the Flask application to initialize them."}), 503
+    job = start_job({k: body[k] for k in ("nat", "mode", "operation", "loss")})
+    return (jsonify(public_job(job)), 202) if job else (jsonify({"error": "An experiment is already running"}), 409)
 
 
 @app.get("/api/jobs/<jobid>")
 def job_status(jobid):
-    if jobid in jobs:
-        return jsonify(jobs[jobid])
-    p = RESULTS / "web_runs" / (jobid + ".json")
-    if not re.fullmatch(r"[0-9a-f-]{36}", jobid) or not p.exists():
+    if not re.fullmatch(r"[0-9a-f-]{36}", jobid) or jobid not in jobs:
         abort(404)
-    return jsonify(json.loads(p.read_text()))
+    return jsonify(public_job(jobs[jobid]))
 
 
-@app.get("/api/jobs")
-def job_list():
-    return jsonify(sorted(({"id": j["id"], "kind": j["kind"], "status": j["status"],
-                           "started": j["started"]} for j in jobs.values()),
-                          key=lambda x: x["started"], reverse=True)[:100])
-
-
-@app.get("/api/diagnostics")
-def diagnostics():
-    if not namespace_exists():
-        return jsonify({"error": "Topology not running", "state": {}})
-    state = snap()
-    for ns in ("ftp-client", "r1", "r2", "ftp-server"):
-        try:
-            state["routes_" + ns] = command(["ip", "netns", "exec", ns, "ip", "-4", "route"], 5)
-        except Exception as exc:
-            state["routes_" + ns] = str(exc)
-    return jsonify({"state": state})
-
-
-@app.get("/api/results")
-def results():
-    def read_csv(name):
-        path = RESULTS / name
-        return list(csv.DictReader(path.open()))[-1000:] if path.is_file() else []
-    captures = [p.name for p in sorted((RESULTS / "pcap").glob("*.pcapng"))]
-    return jsonify({"matrix": read_csv("success_matrix.csv"),
-                    "raw": read_csv("raw.csv"), "summary": read_csv("summary.csv"),
-                    "summary_markdown": safe_read(RESULTS / "summary.md", 30000),
-                    "captures": captures, "verify": safe_read(RESULTS / "verify.txt")})
-
-
-@app.get("/api/artifacts/<path:name>")
-def artifact(name):
-    # Allow only designated artifacts under results/ with path traversal protection.
-    if not (name.startswith("pcap/") or name.startswith("charts/") or name in
-            {"raw.csv", "summary.csv", "summary.md", "success_matrix.csv", "dashboard.html", "verify.txt"}):
+@app.get("/api/jobs/<jobid>/capture")
+def download_capture(jobid):
+    """Only finished captures from jobs in the current server session."""
+    if not re.fullmatch(r"[0-9a-f-]{36}", jobid) or jobid not in jobs:
         abort(404)
-    p = (RESULTS / name).resolve()
-    if not p.is_relative_to(RESULTS.resolve()) or not p.is_file():
+    job = jobs[jobid]
+    if job["status"] != "completed" or not job.get("result", {}).get("capture_available"):
         abort(404)
-    return send_from_directory(RESULTS, name, as_attachment=name.startswith("pcap/"))
+    path = job.get("capture_path")
+    if not path or not Path(path).is_file():
+        abort(404)
+    return send_file(path, mimetype="application/octet-stream", as_attachment=True,
+                     download_name=job["result"]["capture_filename"])
 
 
 if __name__ == "__main__":
-    # Deliberately loopback-only: privileged code may modify the lab network.
-    app.run(host="127.0.0.1", port=5000, debug=False, use_reloader=False)
+    if not bootstrap():
+        raise SystemExit("FTP/NAT startup failed: " + startup["message"])
+    # Privileged lab controller: never expose to a network interface.
+    app.run(host="127.0.0.1", port=5000, debug=False, use_reloader=False, threaded=True)
