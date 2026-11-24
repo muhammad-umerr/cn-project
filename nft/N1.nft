@@ -1,11 +1,18 @@
-# N1: plain masquerade, no FTP helper
+# N1: Plain NAT masquerading without FTP helper
+
 flush ruleset
+
 table ip nat {
-  chain postrouting {
-    type nat hook postrouting priority srcnat; policy accept;
-    oifname "eth-out" ip saddr 192.168.10.0/24 counter masquerade
-  }
+    chain postrouting {
+        type nat hook postrouting priority srcnat; policy accept;
+
+        oifname "eth-out" ip saddr 192.168.10.0/24 counter masquerade
+    }
 }
+
 table ip filter {
-  chain forward { type filter hook forward priority filter; policy accept; counter }
+    chain forward {
+        type filter hook forward priority filter; policy accept;
+        counter
+    }
 }
